@@ -1,0 +1,18 @@
+[project]
+    name = "log-pdm-lib"
+    version = "1.0"
+    authors = [
+        {name="Vladislav Kiryachek", email="w.a.kiryachok@mail.ru"}
+    ]
+    description = "Модель для предиктивной диагностики компьютерных систем по их логам"
+    readme = "README.md"
+    requires-python = ">= 3.11"
+	dependencies = [
+        "matplotlib==3.10.3",
+        "numpy==1.26.4",
+        "pandas==2.3.0",
+        "scikit-learn==1.7.0",
+        "gensim==4.3.3",
+        "plotly==6.2.0",
+        "torch==2.7.1",
+	]
