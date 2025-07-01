@@ -735,27 +735,6 @@ class AEModel:
         )
         return health_index, health_index_weights
 
-    def latent_space_vis(self, data: pd.DataFrame, device: str = "cpu") -> pd.DataFrame:
-        values = self.scale_model.transform(data.values)
-
-        dataset = CustomDataset(values)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
-        ae_model_device = self.ae_model.to(device)
-        predictions = []
-        with torch.no_grad():
-            for _, batch in enumerate(dataloader):
-                x_values_batch = batch.to(device, dtype=torch.float32)
-                outs = ae_model_device.encode(x_values_batch)
-                predictions.append(outs.detach().cpu().numpy())
-
-        dataframe_ae = pd.DataFrame(
-            np.concatenate(predictions, axis=0),
-            index=data.index,
-            columns=[f"column_{i + 1}" for i in range(self.encoder_sizes[-1])],
-        )
-
-        return dataframe_ae
-
     def calc_health_index_threshold(
         self,
         valid_dataset: pd.DataFrame,

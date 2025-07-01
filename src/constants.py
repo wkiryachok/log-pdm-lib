@@ -38,8 +38,24 @@ KEY_WORDS_SQL = [
     r"/\*",
 ]
 KEY_WORDS_SQL = "|".join(KEY_WORDS_SQL)
-REGEX = f"(?:{KEY_WORDS_SQL})"
+REGEX_SQL = f"(?:{KEY_WORDS_SQL})"
 
 TAGS_LIST_HDFS = ["INFO", "WARN"]  # HDFS
 KEY_WORDS_TAGS = "|".join(TAGS_LIST_HDFS)
 REGEX_TAGS_HDFS = f"(?:{KEY_WORDS_TAGS})"
+
+DEFAULT_NLP_MODEL_PROP = {
+    "nlp_model_name": "fasttext",
+    "vector_size": 100,
+    "window": 5,
+    "min_count": 1,
+    "epochs": 5,
+    "n_workers": 4,
+}
+
+DEFAULT_PD_MODEL_PROP = {
+    "model_name": "knn",
+    "k_nearest_nbrs": 7,
+}
+
+N_WORKERS = 4

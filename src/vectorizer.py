@@ -17,7 +17,7 @@ import pandas as pd
 from gensim.models import FastText
 from gensim.models.word2vec import Word2Vec
 from tqdm import tqdm
-from regex_constants import REGEX_TAGS_HDFS
+from constants import REGEX_TAGS_HDFS
 
 
 class LogVectorizer:
@@ -29,45 +29,43 @@ class LogVectorizer:
         path_to_semantic_model: str = None,
         download_model: bool = False,
         model_path: str = "",
-        nlp_model_name: str = "fasttext",
         use_words_tfidf: bool = True,
         use_logs_tfidf: bool = True,
         use_logs_patterns: bool = False,
+        nlp_model_properties: dict = None,
         tags_weights: dict = None,
         patterns_weights: dict = None,
-        vector_size: int = 100,
-        window: int = 5,
-        min_count: int = 1,
-        epochs: int = 5,
         time_interval: float = 1,
-        n_workers: int = 6,
         log_file: str = None,
     ):
         self.__setup_logger(log_file)
-        if nlp_model_name not in ["word2vec", "fasttext"]:
-            self.logger.error("Unknown NLP model: %s", nlp_model_name)
-            raise ValueError(f"Unknown NLP model: {nlp_model_name}")
         self.path_to_pretrained_nlp_model = path_to_pretrained_nlp_model
         self.path_to_semantic_model = path_to_semantic_model
         self.download_model = download_model
         self.model_path = model_path
-        self.nlp_model_name = nlp_model_name
         self.use_words_tfidf = use_words_tfidf
         self.use_logs_tfidf = use_logs_tfidf
         self.use_logs_patterns = use_logs_patterns
+        self.nlp_model_properties = nlp_model_properties
         self.tags_weights = tags_weights
         self.patterns_weights = patterns_weights
-        self.window = window
-        self.vector_size = vector_size
-        self.min_count = min_count
-        self.epochs = epochs
         self.time_interval = time_interval
-        self.n_workers = n_workers
+
+        self.nlp_model_name = nlp_model_properties["nlp_model_name"]
+        self.vector_size = nlp_model_properties["vector_size"]
+        self.window = nlp_model_properties["window"]
+        self.min_count = nlp_model_properties["min_count"]
+        self.epochs = nlp_model_properties["epochs"]
+        self.n_workers = nlp_model_properties["n_workers"]
         self.words_idf_dict = {}
         self.logs_idf_dict = {}
         self.words_tfidf_dict = {}
         self.logs_tfidf_dict = {}
         self.documents_count = 0
+
+        if self.nlp_model_name not in ["word2vec", "fasttext"]:
+            self.logger.error("Unknown NLP model: %s", self.nlp_model_name)
+            raise ValueError(f"Unknown NLP model: {self.nlp_model_name}")
 
         if path_to_pretrained_nlp_model is not None:
             if "word2vec" in path_to_pretrained_nlp_model:

@@ -13,12 +13,13 @@ from functools import partial
 from typing import Tuple, Optional
 import numpy as np
 import pandas as pd
-from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 from slg import SemanticLogGraphModel
 from tools import read_logs
 from vectorizer import LogVectorizer
-from regex_constants import TAGS_LIST_HDFS, REGEX
+from sklearn_models import KnnModel, SvmModel, IsoModel, EnvModel, LofModel
+from autoencoder_model import AEModel
+from constants import TAGS_LIST_HDFS, REGEX_SQL, DEFAULT_NLP_MODEL_PROP, DEFAULT_PD_MODEL_PROP, N_WORKERS
 
 
 class LogAnalysis:
@@ -29,24 +30,19 @@ class LogAnalysis:
         download_model: bool = False,
         path_to_model: str = "",
         path_to_semantic_model: str = "",
-        nlp_model_name: str = "fasttext",
         use_words_tfidf: bool = True,
         use_logs_tfidf: bool = True,
         use_logs_patterns: bool = False,
-        tags_weights: dict = None,
-        patterns_weights: dict = None,
-        vector_size: int = 100,
-        window: int = 5,
-        min_count: int = 1,
-        epochs: int = 5,
         time_interval: int = 1,
-        n_workers: int = 6,
-        n_nearest_nbrs: int = 7,
-        quantile_mean_dist: float = 0.95,
-        save_train_info: bool = True,
+        nlp_model_properties: dict = DEFAULT_NLP_MODEL_PROP,
+        pd_model_properties: dict = DEFAULT_PD_MODEL_PROP,
+        tags_weights: Optional[dict] = None,
+        patterns_weights: Optional[dict] = None,
+        quantile: Optional[float] = 0.95,
+        save_train_info: Optional[bool] = True,
         log_file: str = None,
         log_analysis_model_name: Optional[str] = "log_analysis_model.json",
-        knn_model_name: Optional[str] = "knn_model.pickle",
+        pd_model_name: Optional[str] = "pd_model.pickle",
         doc_vectors_name: Optional[str] = "doc_vectors.csv",
     ):
         self.download_model = download_model
@@ -68,28 +64,29 @@ class LogAnalysis:
             ) as opened_file:
                 log_analysis_model = json.load(opened_file, parse_int=int)
 
-            self.nlp_model_name = log_analysis_model.get("nlp_model_name", "fasttext")
             self.use_words_tfidf = log_analysis_model.get("use_words_tfidf", True)
             self.use_logs_tfidf = log_analysis_model.get("use_logs_tfidf", False)
             self.use_logs_patterns = log_analysis_model.get("use_logs_patterns", False)
+            self.time_interval = log_analysis_model.get("time_interval", 1)
+            self.nlp_model_properties = log_analysis_model.get(
+                "nlp_model_properties",
+                DEFAULT_NLP_MODEL_PROP
+            )
+            self.pd_model_properties = log_analysis_model.get(
+                "pd_model_properties",
+                DEFAULT_PD_MODEL_PROP
+            )
             self.tags_weights = log_analysis_model.get("tags_weights", None)
             self.patterns_weights = log_analysis_model.get("patterns_weights", None)
-            self.vector_size = log_analysis_model.get("vector_size", 100)
-            self.window = log_analysis_model.get("window", 5)
-            self.min_count = log_analysis_model.get("min_count", 1)
-            self.epochs = log_analysis_model.get("epochs", 5)
-            self.time_interval = log_analysis_model.get("time_interval", 1)
-            self.n_workers = log_analysis_model.get("n_workers", 6)
-            self.n_nearest_nbrs = log_analysis_model.get("n_nearest_nbrs", 7)
-            self.quantile_mean_dist = log_analysis_model.get("quantile_mean_dist", 0.95)
+            self.quantile = log_analysis_model.get("quantile", 0.95)
             self.save_train_info = log_analysis_model.get("save_train_info", True)
-            self.mean_distances = pd.read_json(
-                StringIO(log_analysis_model.get("mean_distances", None)), typ="series"
+            self.anomaly_score = pd.read_json(
+                StringIO(log_analysis_model.get("anomaly_score", None)), typ="series"
             )
-            self.treshold_score = log_analysis_model.get("treshold_score", 0)
+            self.threshold = log_analysis_model.get("threshold", 0)
             self.fitted = log_analysis_model.get("fitted", True)
-            self.knn_model_name = log_analysis_model.get(
-                "knn_model_name", "knn_model.pickle"
+            self.pd_model_name = log_analysis_model.get(
+                "pd_model_name", "pd_model.pickle"
             )
             self.doc_vectors_name = log_analysis_model.get(
                 "doc_vectors_name", "doc_vectors.csv"
@@ -102,25 +99,21 @@ class LogAnalysis:
                     "Log analysis model has already created. "
                     "This model will be rewritten."
                 )
-            self.nlp_model_name = nlp_model_name
+
             self.use_words_tfidf = use_words_tfidf
             self.use_logs_tfidf = use_logs_tfidf
             self.use_logs_patterns = use_logs_patterns
+            self.time_interval = time_interval
+            self.nlp_model_properties = nlp_model_properties
+            self.pd_model_properties = pd_model_properties
             self.tags_weights = tags_weights
             self.patterns_weights = patterns_weights
-            self.vector_size = vector_size
-            self.window = window
-            self.min_count = min_count
-            self.epochs = epochs
-            self.time_interval = time_interval
-            self.n_workers = n_workers
-            self.n_nearest_nbrs = n_nearest_nbrs
-            self.quantile_mean_dist = quantile_mean_dist
+            self.quantile = quantile
             self.save_train_info = save_train_info
-            self.mean_distances = None
-            self.treshold_score = None
+            self.train_anomaly_score = None
+            self.threshold = None
             self.fitted = False
-            self.knn_model_name = knn_model_name
+            self.pd_model_name = pd_model_name
             self.doc_vectors_name = doc_vectors_name
 
         self.logger.info("Model parameter 'download_model' = %s", self.download_model)
@@ -131,34 +124,28 @@ class LogAnalysis:
         self.logger.info(
             "Model parameter 'path_to_semantic_model' = %s", self.path_to_semantic_model
         )
-        self.logger.info("Model parameter 'nlp_model_name' = %s", self.nlp_model_name)
         self.logger.info("Model parameter 'use_words_tfidf' = %s", self.use_words_tfidf)
         self.logger.info("Model parameter 'use_logs_tfidf' = %s", self.use_logs_tfidf)
         self.logger.info(
             "Model parameter 'use_logs_patterns' = %s", self.use_logs_patterns
         )
+        self.logger.info("Model parameter 'time_interval' = %s", self.time_interval)
+        self.logger.info("Model parameter 'nlp_model_properties' = %s", self.nlp_model_properties)
+        self.logger.info("Model parameter 'pd_model_properties' = %s", self.pd_model_properties)
         self.logger.info("Model parameter 'tags_weights' = %s", self.tags_weights)
         self.logger.info(
             "Model parameter 'patterns_weights' = %s", self.patterns_weights
         )
-        self.logger.info("Model parameter 'vector_size' = %s", self.vector_size)
-        self.logger.info("Model parameter 'window' = %s", self.window)
-        self.logger.info("Model parameter 'min_count' = %s", self.min_count)
-        self.logger.info("Model parameter 'epochs' = %s", self.epochs)
-        self.logger.info("Model parameter 'time_interval' = %s", self.time_interval)
-        self.logger.info("Model parameter 'n_workers' = %s", self.n_workers)
-        self.logger.info("Model parameter 'n_nearest_nbrs' = %s", self.n_nearest_nbrs)
         self.logger.info(
-            "Model parameter 'quantile_mean_dist' = %s", self.quantile_mean_dist
+            "Model parameter 'quantile' = %s", self.quantile
         )
         self.logger.info("Model parameter 'save_train_info' = %s", self.save_train_info)
-        self.logger.info("Model parameter 'knn_model_name' = %s", self.knn_model_name)
         self.logger.info(
             "Model parameter 'doc_vectors_name' = %s", self.doc_vectors_name
         )
         if download_model:
             self.logger.info(
-                "Model parameter 'treshold_score' = %s", self.treshold_score
+                "Model parameter 'threshold' = %s", self.threshold
             )
             self.logger.info("Model parameter 'fitted' = %s", self.fitted)
 
@@ -200,23 +187,31 @@ class LogAnalysis:
 
         if dataset_type == "HDFS":
             tags_list = TAGS_LIST_HDFS
+        else:
+            ## TODO: add other types of datasets
+            pass
 
         log_pattern_list = []
         ts_list = []
         tag_list = []
         for raw_log in tqdm(logs):
             if delete_sql:
-                search_res = re.search(REGEX, re.sub("\n", " ", raw_log), re.IGNORECASE)
+                search_res = re.search(REGEX_SQL, re.sub("\n", " ", raw_log), re.IGNORECASE)
                 if search_res is not None:
                     raw_log = raw_log[: search_res.start()]
             ts, log = slg_model.preprocess_logline_tokens(raw_log)
             for i, word in enumerate(log):
                 if word in tags_list:
-                    if (len(log) - i - 1) >= self.window:
+                    if "window" in self.nlp_model_properties:
+                        if (len(log) - i - 1) >= self.nlp_model_properties["window"]:
+                            log_pattern_list.append(" ".join(log))
+                            ts_list.append(ts)
+                            tag_list.append(word)
+                        break
+                    else:
                         log_pattern_list.append(" ".join(log))
                         ts_list.append(ts)
-                        tag_list.append(word)
-                    break
+                        tag_list.append(word)                        
         timestamp = np.array(ts_list, dtype="datetime64[s]")
 
         logs_df = pd.DataFrame(index=timestamp)
@@ -234,53 +229,66 @@ class LogAnalysis:
 
     def __split_list(self, lst: list) -> list:
         """Splitting list to n_workers parts function"""
-        n = int(len(lst) / self.n_workers)
+        n = int(len(lst) / N_WORKERS)
         return [lst[i : i + n] for i in range(0, len(lst), n)]
 
     def __parallel_log_preprocessing(self, logs: list) -> Tuple[pd.DataFrame, list]:
         """Parallel log preprocessing function"""
         splited_logs = self.__split_list(logs)
-        with Pool(self.n_workers) as pool:
+        with Pool(N_WORKERS) as pool:
             logs_df = pool.map(
                 partial(self.__log_preprocessing, dataset_type="HDFS"), splited_logs
             )
         logs_df = pd.concat(logs_df)
         return logs_df
 
-    def __calc_mean_distances(
+    def __calc_anomaly_score(
         self, doc_vectors: pd.DataFrame, mode: str = "train"
     ) -> pd.Series:
         if mode == "train":
-            nbrs = NearestNeighbors(n_neighbors=self.n_nearest_nbrs + 1).fit(
-                doc_vectors.values
-            )
+            model_name = self.pd_model_properties.pop("model_name")
+            if model_name == "knn":
+                model = KnnModel(self.pd_model_properties)
+            elif model_name == "svm":
+                model = SvmModel(self.pd_model_properties)
+            elif model_name == "iso":
+                model = IsoModel(self.pd_model_properties)
+            elif model_name == "env":
+                model = EnvModel(self.pd_model_properties)
+            elif model_name == "lof":
+                model = LofModel(self.pd_model_properties)
+            elif model_name == "ae":
+                model = AEModel(self.pd_model_properties)
+            else:
+                self.logger.error(
+                    "Unknown pd model name: %s",
+                    self.pd_model_properties["model_name"],
+                )  
+                raise ValueError(
+                    "Unknown pd model name: %s",
+                    self.pd_model_properties["model_name"],
+                )              
+            self.pd_model_properties["model_name"] = model_name
 
             self.logger.info(
-                "Saving knn model to: %s",
-                os.path.join(self.path_to_model, self.knn_model_name),
+                "Saving pd model to: %s",
+                os.path.join(self.path_to_model, self.pd_model_name),
             )
-            knn_pickle = open(
-                os.path.join(self.path_to_model, self.knn_model_name), "wb"
+            pd_model_pickle = open(
+                os.path.join(self.path_to_model, self.pd_model_name), "wb"
             )
-            pickle.dump(nbrs, knn_pickle)
-            knn_pickle.close()
-
-            distances, _ = nbrs.kneighbors(doc_vectors.values)
-            mean_distances = pd.Series(
-                distances[:, 1:].mean(axis=1), index=doc_vectors.index
-            )
+            pickle.dump(model, pd_model_pickle)
+            pd_model_pickle.close()
         else:
             self.logger.info(
-                "Loading knn model from: %s",
-                os.path.join(self.path_to_model, self.knn_model_name),
+                "Loading pd model from: %s",
+                os.path.join(self.path_to_model, self.pd_model_name),
             )
-            nbrs = pickle.load(
-                open(os.path.join(self.path_to_model, self.knn_model_name), "rb")
+            model = pickle.load(
+                open(os.path.join(self.path_to_model, self.pd_model_name), "rb")
             )
-
-            distances, _ = nbrs.kneighbors(doc_vectors.values)
-            mean_distances = pd.Series(distances.mean(axis=1), index=doc_vectors.index)
-        return mean_distances
+            anomaly_score = model.predict(doc_vectors)
+        return anomaly_score
 
     def fit(
         self,
@@ -338,7 +346,7 @@ class LogAnalysis:
                 start_time = time.time()
                 if parallel_mode:
                     self.logger.info(
-                        "Using %s workers for parallel calculation", self.n_workers
+                        "Using %s workers for parallel calculation", N_WORKERS
                     )
                     logs_df = self.__parallel_log_preprocessing(logs)
                 else:
@@ -359,18 +367,13 @@ class LogAnalysis:
                     log_vectorizer = LogVectorizer(
                         path_to_pretrained_nlp_model=path_to_pretrained_nlp_model,
                         path_to_semantic_model=self.path_to_semantic_model,
-                        nlp_model_name=self.nlp_model_name,
                         use_words_tfidf=self.use_words_tfidf,
                         use_logs_tfidf=self.use_logs_tfidf,
                         use_logs_patterns=self.use_logs_patterns,
+                        nlp_model_properties=self.nlp_model_properties,
                         tags_weights=self.tags_weights,
                         patterns_weights=self.patterns_weights,
-                        vector_size=self.vector_size,
-                        window=self.window,
-                        min_count=self.min_count,
-                        epochs=self.epochs,
                         time_interval=self.time_interval,
-                        n_workers=self.n_workers,
                         log_file=self.log_file,
                     )
                 else:
@@ -380,15 +383,13 @@ class LogAnalysis:
                         download_model=True,
                         model_path=self.path_to_model,
                         path_to_semantic_model=self.path_to_semantic_model,
-                        nlp_model_name=self.nlp_model_name,
                         use_words_tfidf=self.use_words_tfidf,
                         use_logs_tfidf=self.use_logs_tfidf,
                         use_logs_patterns=self.use_logs_patterns,
+                        nlp_model_properties=self.nlp_model_properties,
                         tags_weights=self.tags_weights,
                         patterns_weights=self.patterns_weights,
-                        epochs=self.epochs,
                         time_interval=self.time_interval,
-                        n_workers=self.n_workers,
                         log_file=self.log_file,
                     )
                 # fit vectorizer
@@ -402,10 +403,13 @@ class LogAnalysis:
                 self.logger.info("Model updating")
 
                 # save nlp model
-                if self.nlp_model_name == "word2vec":
+                if self.nlp_model_properties["nlp_model_name"] == "word2vec":
                     full_nlp_model_name = "word2vec.model"
-                else:
+                elif self.nlp_model_properties["nlp_model_name"] == "fasttext":
                     full_nlp_model_name = "fasttext.model"
+                else:
+                    # TODO add other vectorizers
+                    pass
                 nlp_path = os.path.join(
                     self.path_to_model, "nlp_model", full_nlp_model_name
                 )
@@ -480,7 +484,6 @@ class LogAnalysis:
                 download_model=True,
                 model_path=self.path_to_model,
                 path_to_semantic_model=self.path_to_semantic_model,
-                nlp_model_name=self.nlp_model_name,
                 use_words_tfidf=self.use_words_tfidf,
                 use_logs_tfidf=self.use_logs_tfidf,
                 use_logs_patterns=self.use_logs_patterns,
@@ -543,51 +546,49 @@ class LogAnalysis:
 
         self.logger.info("Start calculating mean distances with KNN")
         doc_vectors.dropna(inplace=True)
-        self.mean_distances = self.__calc_mean_distances(
-            doc_vectors.iloc[:, : self.vector_size], mode="train"
+        self.__calc_anomaly_score(
+            doc_vectors.iloc[:, :self.nlp_model_properties["vector_size"]], mode="train"
         )
-        self.treshold_score = np.quantile(self.mean_distances, self.quantile_mean_dist)
+        self.train_anomaly_score = self.__calc_anomaly_score(
+            doc_vectors.iloc[:, :self.nlp_model_properties["vector_size"]], mode="test"
+        )
+        self.threshold = np.quantile(self.train_anomaly_score, self.quantile)
         self.fitted = True
         self.save_model()
 
-    def get_mean_distances(self):
-        """Mean distances getter function"""
-        if self.mean_distances is None:
-            self.logger.error("mean_distances wasn't calculated")
-            raise ValueError("mean_distances wasn't calculated")
-        return self.mean_distances
+    def get_train_anomaly_score(self):
+        """Train anomaly score getter function"""
+        if self.train_anomaly_score is None:
+            self.logger.error("Train anomaly score wasn't calculated")
+            raise ValueError("Train anomaly score wasn't calculated")
+        return self.train_anomaly_score
 
-    def get_treshold_score(self):
-        """Treshold score getter function"""
-        if self.treshold_score is None:
-            self.logger.error("treshold_score wasn't calculated")
-            raise ValueError("treshold_score wasn't calculated")
-        return self.treshold_score
+    def get_threshold(self):
+        """Threshold getter function"""
+        if self.threshold is None:
+            self.logger.error("Threshold wasn't calculated")
+            raise ValueError("Threshold wasn't calculated")
+        return self.threshold
 
     def save_model(self) -> None:
         """Model saving function"""
         self.logger.info("Saving log analysis model to folder: %s", self.path_to_model)
         log_analysis_model = {
-            "nlp_model_name": self.nlp_model_name,
             "use_words_tfidf": self.use_words_tfidf,
             "use_logs_tfidf": self.use_logs_tfidf,
             "use_logs_patterns": self.use_logs_patterns,
+            "time_interval": self.time_interval,
+            "nlp_model_properties": self.nlp_model_properties,
+            "pd_model_properties": self.pd_model_properties,
             "tags_weights": self.tags_weights,
             "patterns_weights": self.patterns_weights,
-            "vector_size": self.vector_size,
-            "window": self.window,
-            "min_count": self.min_count,
-            "epochs": self.epochs,
-            "time_interval": self.time_interval,
-            "n_workers": self.n_workers,
-            "n_nearest_nbrs": self.n_nearest_nbrs,
-            "quantile_mean_dist": self.quantile_mean_dist,
+            "quantile": self.quantile,
             "save_train_info": self.save_train_info,
             "fitted": self.fitted,
-            "knn_model_name": self.knn_model_name,
+            "pd_model_name": self.pd_model_name,
             "doc_vectors_name": self.doc_vectors_name,
-            "treshold_score": self.treshold_score,
-            "mean_distances": self.mean_distances.to_json(),
+            "threshold": self.threshold,
+            "train_anomaly_score": self.train_anomaly_score.to_json(),
         }
 
         log_analysis_model_path = os.path.join(
